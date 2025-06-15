@@ -83,13 +83,25 @@ class _ChromeMonitorScreenState extends State<ChromeMonitorScreen> {
 
     // --- Monitor Unpacked Extension Source Directory (if path is provided) ---
     if (unpackedExtensionSourceDirectoryPath.isNotEmpty) {
-      final unpackedSourceDir = Directory(unpackedExtensionSourceDirectoryPath);
+      String absoluteUnpackedPath = unpackedExtensionSourceDirectoryPath;
+      if (!p.isAbsolute(unpackedExtensionSourceDirectoryPath)) {
+        // homeDir is checked for null at the beginning of _startMonitoring
+        absoluteUnpackedPath = p.join(
+          homeDir,
+          unpackedExtensionSourceDirectoryPath,
+        );
+      }
+
+      final unpackedSourceDir = Directory(absoluteUnpackedPath);
       if (await unpackedSourceDir.exists()) {
         print(
-          '[INFO] Unpacked extension source directory found at $unpackedExtensionSourceDirectoryPath. Starting watcher.',
+          '[INFO] Unpacked extension source directory found at $absoluteUnpackedPath. Starting watcher.',
         );
         final unpackedWatcher = unpackedSourceDir.watch().listen((event) async {
           // Check if the watched directory itself has been deleted.
+          // A short delay can help ensure the file system has settled after an event.
+          await Future.delayed(const Duration(milliseconds: 100));
+
           if (!(await unpackedSourceDir.exists())) {
             setState(
               () =>
@@ -105,11 +117,11 @@ class _ChromeMonitorScreenState extends State<ChromeMonitorScreen> {
         _watchers.add(unpackedWatcher);
         isAnythingBeingMonitored = true;
         print(
-          '[INFO] Monitoring started for unpacked source: $unpackedExtensionSourceDirectoryPath',
+          '[INFO] Monitoring started for unpacked source: $absoluteUnpackedPath',
         );
       } else {
         print(
-          '[WARN] Unpacked extension source directory not found at $unpackedExtensionSourceDirectoryPath. Skipping watch for it.',
+          '[WARN] Unpacked extension source directory not found at $absoluteUnpackedPath. Skipping watch for it.',
         );
       }
     }
@@ -190,6 +202,7 @@ class _ChromeMonitorScreenState extends State<ChromeMonitorScreen> {
       ) {
         // Check if unpacked watcher was added
         print(
+          // This log might be redundant if absoluteUnpackedPath was already logged
           '[INFO] Also monitoring unpacked extension source at: $unpackedExtensionSourceDirectoryPath',
         );
       }
@@ -201,6 +214,63 @@ class _ChromeMonitorScreenState extends State<ChromeMonitorScreen> {
       print(
         '[WARN] No active monitoring. Extension $extensionId not found in any Chrome profile and/or unpacked source path was not valid or provided.',
       );
+    }
+  }
+
+  Future<void> _deleteDirectoryWithRetries(
+    Directory dir,
+    String dirDescriptionForStatus,
+  ) async {
+    const maxRetries = 3;
+    const initialDelaySeconds =
+        2; // Initial delay before first attempt after kill
+
+    for (int i = 0; i < maxRetries; i++) {
+      try {
+        if (await dir.exists()) {
+          print(
+            '[INFO] Attempt ${i + 1}/$maxRetries to delete $dirDescriptionForStatus: ${dir.path}',
+          );
+          await dir.delete(recursive: true);
+          print(
+            '[INFO] $dirDescriptionForStatus ${dir.path} deleted successfully.',
+          );
+          setState(() => _status = '$dirDescriptionForStatus deleted.');
+          return;
+        } else {
+          print(
+            '[INFO] $dirDescriptionForStatus ${dir.path} already deleted or never existed.',
+          );
+          setState(
+            () => _status = '$dirDescriptionForStatus was already missing.',
+          );
+          return;
+        }
+      } catch (e) {
+        print(
+          '[ERROR] Attempt ${i + 1}/$maxRetries failed to delete $dirDescriptionForStatus ${dir.path}: $e',
+        );
+        if (i < maxRetries - 1) {
+          final retryDelay = Duration(
+            seconds: initialDelaySeconds * (i + 2),
+          ); // Increase delay for subsequent retries
+          print(
+            '[INFO] Retrying deletion of ${dir.path} in ${retryDelay.inSeconds} seconds...',
+          );
+          await Future.delayed(retryDelay);
+        } else {
+          print(
+            '[ERROR] Max retries reached for deleting $dirDescriptionForStatus ${dir.path}.',
+          );
+          setState(
+            () =>
+                _status =
+                    'Error: Failed to delete $dirDescriptionForStatus after $maxRetries attempts. $e',
+          );
+          // Optionally re-throw or handle the persistent failure
+          return; // Stop retrying
+        }
+      }
     }
   }
 
@@ -217,29 +287,16 @@ class _ChromeMonitorScreenState extends State<ChromeMonitorScreen> {
       print('[INFO] Google Chrome process killed.');
 
       // Wait a moment
-      await Future.delayed(Duration(seconds: 1));
+      await Future.delayed(const Duration(seconds: 2)); // Increased delay
 
-      // Delete the profile folder
-      if (await profileDir.exists()) {
-        print(
-          '[INFO] Attempting to delete profile directory: ${profileDir.path}',
-        );
-        await profileDir.delete(recursive: true);
-        setState(
-          () =>
-              _status =
-                  'Profile $profileName deleted due to extension removal.',
-        );
-        print('[INFO] Chrome profile directory deleted successfully.');
-      } else {
-        setState(
-          () => _status = 'Profile folder $profileName already missing.',
-        );
-        print('[WARN] Profile folder ${profileDir.path} was already missing.');
-      }
+      await _deleteDirectoryWithRetries(profileDir, 'Profile $profileName');
     } catch (e) {
-      setState(() => _status = 'Error during cleanup for $profileName: $e');
-      print('[ERROR] Exception during cleanup for $profileName: $e');
+      // Error is already set by _deleteDirectoryWithRetries or if Process.run fails
+      if (!_status.startsWith('Error: Failed to delete')) {
+        // Avoid overwriting specific delete error
+        setState(() => _status = 'Error during cleanup for $profileName: $e');
+        print('[ERROR] Exception during cleanup for $profileName: $e');
+      }
     }
   }
 
@@ -257,7 +314,7 @@ class _ChromeMonitorScreenState extends State<ChromeMonitorScreen> {
                 'Chrome killed due to unpacked source/asset removal. Deleting all profiles...',
       );
 
-      await Future.delayed(Duration(seconds: 1));
+      await Future.delayed(const Duration(seconds: 2)); // Increased delay
 
       final homeDir = Platform.environment['HOME'];
       if (homeDir == null) {
@@ -284,14 +341,9 @@ class _ChromeMonitorScreenState extends State<ChromeMonitorScreen> {
             final dirName = p.basename(entity.path);
             if (dirName == 'Default' || dirName.startsWith('Profile ')) {
               print(
-                '[INFO] Attempting to delete profile directory: ${entity.path}',
+                '[INFO] Preparing to delete profile directory: ${entity.path} as part of all profiles deletion.',
               );
-              try {
-                await entity.delete(recursive: true);
-                print('[INFO] Profile ${entity.path} deleted.');
-              } catch (e) {
-                print('[ERROR] Failed to delete profile ${entity.path}: $e');
-              }
+              await _deleteDirectoryWithRetries(entity, 'Profile $dirName');
             }
           }
         }
@@ -309,8 +361,13 @@ class _ChromeMonitorScreenState extends State<ChromeMonitorScreen> {
         );
       }
     } catch (e) {
-      setState(() => _status = 'Error during cleanup for unpacked source: $e');
-      print('[ERROR] Exception during cleanup for unpacked source: $e');
+      // Error is already set by _deleteDirectoryWithRetries or if Process.run fails
+      if (!_status.startsWith('Error: Failed to delete')) {
+        setState(
+          () => _status = 'Error during cleanup for unpacked source: $e',
+        );
+        print('[ERROR] Exception during cleanup for unpacked source: $e');
+      }
     }
   }
 
