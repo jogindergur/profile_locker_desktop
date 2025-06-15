@@ -1,3 +1,5 @@
+// ignore_for_file: avoid_print
+
 import 'dart:async';
 import 'dart:io';
 
@@ -5,7 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:path/path.dart' as p;
 
 // const extensionId = 'loofnacbmbaonpphbedakggdnhlpmhne';
-const extensionId = '';
+const extensionId = 'dicdpbofeeifbofnkcioongmplpjmoal';
 // Set this path if you want to monitor an unpacked extension's source directory directly.
 // Example: const unpackedExtensionSourceDirectoryPath = '/Users/youruser/Projects/MyChromeExtensionSource';
 const String unpackedExtensionSourceDirectoryPath =
@@ -39,6 +41,12 @@ class _ChromeMonitorScreenState extends State<ChromeMonitorScreen> {
   String _status = 'Idle';
   final List<String> _profilesWithExtension = [];
   final List<StreamSubscription<FileSystemEvent>> _watchers = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _startMonitoring();
+  }
 
   Future<void> _startMonitoring() async {
     print('[INFO] Attempting to start monitoring...');
@@ -166,7 +174,10 @@ class _ChromeMonitorScreenState extends State<ChromeMonitorScreen> {
       setState(() {
         _isMonitoring = true;
         _status = 'Monitoring extension in $profilesMonitoredCount profile(s).';
-        if (_profilesWithExtension.isNotEmpty && extensionId.isNotEmpty) {
+        if (_profilesWithExtension.isNotEmpty
+        // TODO: Uncomment when extensionId is set
+        // && extensionId.isNotEmpty
+        ) {
           _status +=
               '\nExtension "$extensionId" found in: ${_profilesWithExtension.join(', ')}.';
         }
@@ -174,8 +185,9 @@ class _ChromeMonitorScreenState extends State<ChromeMonitorScreen> {
       print(
         '[INFO] Monitoring started for extension ID: $extensionId in $profilesMonitoredCount profile(s).',
       );
-      if (unpackedExtensionSourceDirectoryPath.isNotEmpty &&
-          _watchers.any((w) => w != null)) {
+      if (unpackedExtensionSourceDirectoryPath.isNotEmpty
+      // && _watchers.any((w) => w != null)
+      ) {
         // Check if unpacked watcher was added
         print(
           '[INFO] Also monitoring unpacked extension source at: $unpackedExtensionSourceDirectoryPath',
